@@ -19,10 +19,25 @@ export interface Asset {
   aiInsight?: string;
 }
 
+export interface TradePlan {
+  symbol: string;
+  setupType: string;
+  entryPrice: number;
+  stopLoss: number;
+  takeProfit1: number;
+  takeProfit2: number;
+  riskReward: string;
+  positionSize: string;
+  confidenceScore: number;
+  reason: string;
+}
+
 export interface FilterSettings {
   minGap: number;
   minRelVol: number;
   minPrice: number;
   maxPrice: number;
   marketCap: 'All' | 'Small' | 'Mid' | 'Large';
+  accountSize: number;
+  riskPerTrade: number;
 }

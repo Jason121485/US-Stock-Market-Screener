@@ -2,7 +2,6 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import axios from "axios";
 import dotenv from "dotenv";
-import { GoogleGenAI, Type } from "@google/genai";
 
 dotenv.config();
 
@@ -10,9 +9,6 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json());
-
-// Initialize Gemini
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
 
 // Mock/Fallback Data for Demo if API keys are missing
 const getMockStocks = () => [
@@ -95,7 +91,15 @@ app.get("/api/market/stocks", async (req, res) => {
     }
 
     // Fetch snapshot of all US stocks
-    const response = await axios.get(`https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers?apiKey=${apiKey}`);
+    const response = await axios.get(`https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers?apiKey=${apiKey}`, {
+      validateStatus: (status) => status < 500 // Don't throw on 403
+    });
+
+    if (response.status === 403) {
+      console.warn("Polygon API returned 403 Forbidden. Check your API key permissions.");
+      return res.json(getMockStocks());
+    }
+
     const tickers = response.data.tickers || [];
 
     // Filter for momentum: Gap/Change > 3%, Volume > 1M (liquidity), Price > $1
@@ -146,42 +150,9 @@ app.get("/api/market/stocks", async (req, res) => {
       });
 
     res.json(momentumStocks.length > 0 ? momentumStocks : getMockStocks());
-  } catch (error) {
-    console.error("Error fetching stocks from Polygon:", error);
+  } catch (error: any) {
+    console.error("Error fetching stocks from Polygon:", error.message || error);
     res.json(getMockStocks());
-  }
-});
-
-app.post("/api/ai/analyze", async (req, res) => {
-  const { assets } = req.body;
-  
-  try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `Analyze these U.S. stocks for day trading momentum. Rank them and provide a brief expert insight for each, focusing on the catalyst and technical breakout levels.
-      Assets: ${JSON.stringify(assets)}`,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              symbol: { type: Type.STRING },
-              aiScore: { type: Type.NUMBER },
-              insight: { type: Type.STRING },
-              recommendation: { type: Type.STRING }
-            },
-            required: ["symbol", "aiScore", "insight", "recommendation"]
-          }
-        }
-      }
-    });
-
-    res.json(JSON.parse(response.text || "[]"));
-  } catch (error) {
-    console.error("AI Analysis Error:", error);
-    res.status(500).json({ error: "AI analysis failed" });
   }
 });
 

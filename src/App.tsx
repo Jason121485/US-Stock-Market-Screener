@@ -14,18 +14,28 @@ import {
   ArrowUpRight,
   Filter
 } from 'lucide-react';
-import { Asset, FilterSettings } from './types';
-import { Card, Badge, Stat, cn } from './components/UI';
+import { Asset, FilterSettings, TradePlan } from './types';
+import { Card, Badge, Stat, TradeCard, cn } from './components/UI';
 import { MiniChart, MainChart } from './components/Charts';
+import { GoogleGenAI, Type } from "@google/genai";
 
 export default function App() {
   const [stocks, setStocks] = useState<Asset[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
-  const [aiInsights, setAiInsights] = useState<any[]>([]);
+  const [tradePlans, setTradePlans] = useState<TradePlan[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
+  const [settings, setSettings] = useState<FilterSettings>({
+    minGap: 3,
+    minRelVol: 2,
+    minPrice: 1,
+    maxPrice: 1000,
+    marketCap: 'All',
+    accountSize: 25000,
+    riskPerTrade: 1
+  });
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
@@ -56,8 +66,16 @@ export default function App() {
     try {
       const stocksRes = await fetch('/api/market/stocks');
       const stocksData = await stocksRes.json();
-      setStocks(stocksData);
-      if (!selectedAsset && stocksData.length > 0) setSelectedAsset(stocksData[0]);
+      
+      // Generate AI Insights for the top movers
+      const insights = await generateAIInsights(stocksData.slice(0, 10));
+      const updatedStocks = stocksData.map((s: Asset) => ({
+        ...s,
+        aiInsight: insights.find((i: any) => i.symbol === s.symbol)?.insight || s.aiInsight
+      }));
+
+      setStocks(updatedStocks);
+      if (!selectedAsset && updatedStocks.length > 0) setSelectedAsset(updatedStocks[0]);
     } catch (error) {
       console.error("Failed to fetch data", error);
     } finally {
@@ -65,18 +83,96 @@ export default function App() {
     }
   };
 
+  const generateAIInsights = async (assets: Asset[]) => {
+    try {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) return [];
+
+      const ai = new GoogleGenAI({ apiKey });
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: `Provide a brief, one-sentence momentum analysis for each of these stocks. Focus on potential and immediate signals.
+        Assets: ${JSON.stringify(assets.map(a => ({ symbol: a.symbol, change: a.change, relVol: a.relVol, catalyst: a.catalyst })))}`,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                symbol: { type: Type.STRING },
+                insight: { type: Type.STRING }
+              },
+              required: ["symbol", "insight"]
+            }
+          }
+        }
+      });
+      return JSON.parse(response.text || "[]");
+    } catch (error) {
+      console.error("Failed to generate insights", error);
+      return [];
+    }
+  };
+
   const runAIAnalysis = async () => {
     setIsAnalyzing(true);
     try {
-      const response = await fetch('/api/ai/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ assets: stocks.slice(0, 5) })
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        throw new Error("GEMINI_API_KEY is not configured in the environment.");
+      }
+
+      const ai = new GoogleGenAI({ apiKey });
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: `You are an expert day trading AI. Analyze these U.S. stocks and generate a complete trade plan for the top 3 high-probability setups.
+        
+        User Risk Settings:
+        - Account Size: $${settings.accountSize}
+        - Risk Per Trade: ${settings.riskPerTrade}%
+        
+        Assets: ${JSON.stringify(stocks.slice(0, 5))}
+        
+        For each selected stock, provide:
+        1. Setup Type (e.g., Gap & Go, ORB, VWAP Pullback)
+        2. Entry Price (Technical breakout level)
+        3. Stop Loss (Logical support or VWAP breakdown)
+        4. Take Profit 1 & 2 (Minimum 1:2 R:R)
+        5. Position Size (Calculated based on risk settings and stop loss distance)
+        6. Confidence Score (0-100)
+        7. Reason (Confluence of at least 3 signals)
+        
+        Filter out low-quality setups or illiquid assets.`,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                symbol: { type: Type.STRING },
+                setupType: { type: Type.STRING },
+                entryPrice: { type: Type.NUMBER },
+                stopLoss: { type: Type.NUMBER },
+                takeProfit1: { type: Type.NUMBER },
+                takeProfit2: { type: Type.NUMBER },
+                riskReward: { type: Type.STRING },
+                positionSize: { type: Type.STRING },
+                confidenceScore: { type: Type.NUMBER },
+                reason: { type: Type.STRING }
+              },
+              required: ["symbol", "setupType", "entryPrice", "stopLoss", "takeProfit1", "takeProfit2", "riskReward", "positionSize", "confidenceScore", "reason"]
+            }
+          }
+        }
       });
-      const insights = await response.json();
-      setAiInsights(insights);
-    } catch (error) {
+
+      const plans = JSON.parse(response.text || "[]");
+      setTradePlans(plans);
+    } catch (error: any) {
       console.error("AI Analysis failed", error);
+      alert(`AI Analysis Error: ${error.message || "Unknown error"}`);
     } finally {
       setIsAnalyzing(false);
     }
@@ -133,42 +229,78 @@ export default function App() {
         {/* Filter Bar (Conditional) */}
         {showFilters && (
           <div className="col-span-12 animate-in slide-in-from-top-4 duration-300">
-            <Card className="p-4 grid grid-cols-1 md:grid-cols-4 lg:grid-cols-6 gap-4 bg-[#1A1B1E]">
+            <Card className="p-4 grid grid-cols-1 md:grid-cols-4 lg:grid-cols-7 gap-4 bg-[#1A1B1E]">
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Account Size ($)</label>
+                <input 
+                  type="number" 
+                  value={settings.accountSize} 
+                  onChange={(e) => setSettings({...settings, accountSize: Number(e.target.value)})}
+                  className="w-full bg-[#0A0B0D] border border-[#2A2B2F] rounded p-2 text-xs text-white" 
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Risk Per Trade (%)</label>
+                <input 
+                  type="number" 
+                  value={settings.riskPerTrade} 
+                  onChange={(e) => setSettings({...settings, riskPerTrade: Number(e.target.value)})}
+                  className="w-full bg-[#0A0B0D] border border-[#2A2B2F] rounded p-2 text-xs text-white" 
+                />
+              </div>
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Min Gap %</label>
-                <input type="number" defaultValue={3} className="w-full bg-[#0A0B0D] border border-[#2A2B2F] rounded p-2 text-xs text-white" />
+                <input 
+                  type="number" 
+                  value={settings.minGap} 
+                  onChange={(e) => setSettings({...settings, minGap: Number(e.target.value)})}
+                  className="w-full bg-[#0A0B0D] border border-[#2A2B2F] rounded p-2 text-xs text-white" 
+                />
               </div>
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Vol Multiplier</label>
-                <input type="number" defaultValue={2} className="w-full bg-[#0A0B0D] border border-[#2A2B2F] rounded p-2 text-xs text-white" />
+                <input 
+                  type="number" 
+                  value={settings.minRelVol} 
+                  onChange={(e) => setSettings({...settings, minRelVol: Number(e.target.value)})}
+                  className="w-full bg-[#0A0B0D] border border-[#2A2B2F] rounded p-2 text-xs text-white" 
+                />
               </div>
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Price Range</label>
                 <div className="flex gap-2">
-                  <input type="number" placeholder="Min" className="w-1/2 bg-[#0A0B0D] border border-[#2A2B2F] rounded p-2 text-xs text-white" />
-                  <input type="number" placeholder="Max" className="w-1/2 bg-[#0A0B0D] border border-[#2A2B2F] rounded p-2 text-xs text-white" />
+                  <input 
+                    type="number" 
+                    placeholder="Min" 
+                    value={settings.minPrice}
+                    onChange={(e) => setSettings({...settings, minPrice: Number(e.target.value)})}
+                    className="w-1/2 bg-[#0A0B0D] border border-[#2A2B2F] rounded p-2 text-xs text-white" 
+                  />
+                  <input 
+                    type="number" 
+                    placeholder="Max" 
+                    value={settings.maxPrice}
+                    onChange={(e) => setSettings({...settings, maxPrice: Number(e.target.value)})}
+                    className="w-1/2 bg-[#0A0B0D] border border-[#2A2B2F] rounded p-2 text-xs text-white" 
+                  />
                 </div>
               </div>
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Market Cap</label>
-                <select className="w-full bg-[#0A0B0D] border border-[#2A2B2F] rounded p-2 text-xs text-white">
+                <select 
+                  value={settings.marketCap}
+                  onChange={(e) => setSettings({...settings, marketCap: e.target.value as any})}
+                  className="w-full bg-[#0A0B0D] border border-[#2A2B2F] rounded p-2 text-xs text-white"
+                >
                   <option>All</option>
                   <option>Small Cap</option>
                   <option>Mid Cap</option>
                   <option>Large Cap</option>
                 </select>
               </div>
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Float Size</label>
-                <select className="w-full bg-[#0A0B0D] border border-[#2A2B2F] rounded p-2 text-xs text-white">
-                  <option>All</option>
-                  <option>Low Float (&lt;20M)</option>
-                  <option>Mid Float</option>
-                </select>
-              </div>
               <div className="flex items-end">
                 <button className="w-full py-2 bg-emerald-500 text-black font-bold text-xs rounded hover:bg-emerald-400 transition-colors">
-                  APPLY FILTERS
+                  SAVE SETTINGS
                 </button>
               </div>
             </Card>
@@ -225,6 +357,7 @@ export default function App() {
                     <th className="px-4 py-3 text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Gap %</th>
                     <th className="px-4 py-3 text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Rel Vol</th>
                     <th className="px-4 py-3 text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Catalyst</th>
+                    <th className="px-4 py-3 text-[10px] font-bold text-zinc-500 uppercase tracking-widest">AI Insight</th>
                     <th className="px-4 py-3 text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Score</th>
                     <th className="px-4 py-3 text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Chart</th>
                   </tr>
@@ -281,6 +414,11 @@ export default function App() {
                           {asset.catalyst}
                         </Badge>
                       </td>
+                      <td className="px-4 py-4 max-w-[200px]">
+                        <div className="text-[10px] text-zinc-400 leading-tight italic truncate hover:whitespace-normal hover:overflow-visible hover:bg-[#151619] hover:z-10 hover:relative hover:p-1 hover:rounded">
+                          {asset.aiInsight || "Analyzing..."}
+                        </div>
+                      </td>
                       <td className="px-4 py-4">
                         <div className="flex items-center gap-2">
                           <span className={cn(
@@ -320,21 +458,10 @@ export default function App() {
               </button>
             </div>
 
-            <div className="p-4 space-y-4 flex-1 overflow-y-auto max-h-[400px]">
-              {aiInsights.length > 0 ? (
-                aiInsights.map((insight, idx) => (
-                  <div key={idx} className="p-3 bg-[#0A0B0D] border border-[#2A2B2F] rounded-lg space-y-2">
-                    <div className="flex justify-between items-center">
-                      <span className="text-xs font-bold text-white">{insight.symbol}</span>
-                      <Badge variant="info">Score: {insight.aiScore}</Badge>
-                    </div>
-                    <p className="text-[11px] text-zinc-400 leading-relaxed italic">
-                      "{insight.insight}"
-                    </p>
-                    <div className="flex items-center gap-1 text-[10px] font-bold text-emerald-400 uppercase tracking-wider">
-                      <ArrowUpRight size={12} /> {insight.recommendation}
-                    </div>
-                  </div>
+            <div className="p-4 space-y-4 flex-1 overflow-y-auto max-h-[600px]">
+              {tradePlans.length > 0 ? (
+                tradePlans.map((plan, idx) => (
+                  <TradeCard key={idx} plan={plan} />
                 ))
               ) : (
                 <div className="flex flex-col items-center justify-center py-12 text-center space-y-4">
@@ -342,8 +469,8 @@ export default function App() {
                     <BrainCircuit className="text-zinc-600" size={24} />
                   </div>
                   <div>
-                    <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest">No Active Analysis</p>
-                    <p className="text-[10px] text-zinc-600 mt-1">Run AI Scan to get institutional-grade insights on current movers.</p>
+                    <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest">No Active Trade Plans</p>
+                    <p className="text-[10px] text-zinc-600 mt-1">Run AI Scan to generate institutional-grade trade setups and risk plans.</p>
                   </div>
                 </div>
               )}
@@ -371,6 +498,15 @@ export default function App() {
               <MainChart symbol={selectedAsset.symbol} price={selectedAsset.price} />
 
               <div className="p-4 grid grid-cols-2 gap-4 border-t border-[#2A2B2F]">
+                <div className="p-3 bg-[#0A0B0D] rounded-lg border border-[#2A2B2F] col-span-2">
+                  <div className="text-[10px] text-zinc-500 font-bold uppercase mb-1 flex items-center gap-2">
+                    <BrainCircuit size={12} className="text-emerald-500" />
+                    AI Momentum Insight
+                  </div>
+                  <div className="text-xs text-zinc-300 italic leading-relaxed">
+                    {selectedAsset.aiInsight || "Generating institutional-grade analysis..."}
+                  </div>
+                </div>
                 <div className="p-3 bg-[#0A0B0D] rounded-lg border border-[#2A2B2F]">
                   <div className="text-[10px] text-zinc-500 font-bold uppercase mb-1">Float Size</div>
                   <div className="text-sm font-mono text-white">{selectedAsset.float}</div>
