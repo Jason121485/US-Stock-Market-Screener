@@ -1,0 +1,5 @@
+{
+  "name": "US Momentum Terminal",
+  "description": "Real-time U.S. stock market momentum screener for day traders, featuring AI-powered setup ranking and technical breakout detection.",
+  "requestFramePermissions": []
+}
