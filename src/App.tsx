@@ -25,6 +25,31 @@ export default function App() {
   const [aiInsights, setAiInsights] = useState<any[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
+  const [currentTime, setCurrentTime] = useState(new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const formatTime = (date: Date) => {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    }).format(date);
+  };
+
+  const formatDate = (date: Date) => {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    }).format(date);
+  };
 
   const fetchData = async () => {
     setLoading(true);
@@ -79,6 +104,14 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-4">
+            <div className="hidden md:flex flex-col items-end mr-4">
+              <div className="text-white font-mono text-sm font-bold tracking-tighter">
+                {formatTime(currentTime)}
+              </div>
+              <div className="text-[9px] text-zinc-500 font-bold uppercase tracking-widest">
+                {formatDate(currentTime)} • NY TIME
+              </div>
+            </div>
             <div className="flex items-center gap-2 px-3 py-1.5 bg-[#0A0B0D] border border-[#2A2B2F] rounded-lg">
               <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
               <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">NYSE/NASDAQ LIVE</span>
